@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
-	"strconv"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/exp/slices"
+	"golang.org/x/exp/slog"
 )
 
 type ESLConfig struct {
@@ -27,27 +27,48 @@ type ESLConnection struct {
 	EventBindings []string
 	Filters       map[string]string
 	Config        ESLConfig
-	scanner       *bufio.Scanner
 	conn          net.Conn
 	reader        *bufio.Reader
 	writer        *bufio.Writer
 	writeMutex    sync.Mutex
 	replyChannel  chan ESLMessage
 	errorChannel  chan error
+	status        string
+	jobs          map[string]chan ESLMessage
 
-	jobs map[string]chan ESLMessage
+	Logger      *slog.Logger
+	LogMessages bool
+}
+
+func (esl *ESLConnection) Init() error {
+	err := esl.Connect()
+	if err != nil {
+		return err
+	}
+
+	go esl.ReadMessages()
+	_, err = esl.Authenticate()
+	if err != nil {
+		return err
+	}
+	err = esl.InitEventBindings()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (esl *ESLConnection) Connect() error {
 	var err error
+	esl.SetStatus("connecting")
 	esl.conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", esl.Config.Host, esl.Config.Port))
 	if err != nil {
 		return err
 	}
+	esl.Logger.Debug("connected", "config", esl.Config)
 	esl.reader = bufio.NewReader(esl.conn)
 	esl.writer = bufio.NewWriter(esl.conn)
-
-	esl.scanner = bufio.NewScanner(esl.conn)
+	esl.SetStatus("ready")
 	return nil
 }
 
@@ -105,11 +126,18 @@ func (esl *ESLConnection) SendCMD(msg string) (ESLMessage, error) {
 	return esl.SendCMDTimed(msg, 0)
 }
 
-func (esl *ESLConnection) SendCMDTimed(msg string, timeout time.Duration) (ESLMessage, error) {
+func (esl *ESLConnection) IsReady() bool {
+	return esl.status == "ready"
+}
+
+func (esl *ESLConnection) SendRecvTimed(msg string, timeout time.Duration) (ESLMessage, error) {
+	esl.Logger.Debug("trying to lock write log", "message", msg)
 	esl.writeMutex.Lock()
 	defer esl.writeMutex.Unlock()
+	esl.Logger.Debug("lock aquired", "message", msg)
 	err := esl.Write(msg + "\n\n")
 	if err != nil {
+		esl.Logger.Error("socket write error", "error", err)
 		return ESLMessage{}, err
 	}
 	if timeout > 0 {
@@ -117,13 +145,17 @@ func (esl *ESLConnection) SendCMDTimed(msg string, timeout time.Duration) (ESLMe
 		case nmsg := <-esl.replyChannel:
 			return nmsg, nil
 		case <-time.After(timeout * time.Second):
+			esl.Logger.Error("socket write error", "error", "timeout")
 			return ESLMessage{}, fmt.Errorf("esl timeout")
 		}
 	} else {
 		nmsg := <-esl.replyChannel
 		return nmsg, nil
 	}
+}
 
+func (esl *ESLConnection) SendCMDTimed(msg string, timeout time.Duration) (ESLMessage, error) {
+	return esl.SendRecvTimed(msg+"\n\n", timeout)
 }
 
 func (esl *ESLConnection) SendCMDf(msg string, a ...any) (ESLMessage, error) {
@@ -140,6 +172,9 @@ func (esl *ESLConnection) Writef(msg string, a ...any) error {
 }
 
 func (esl *ESLConnection) Write(msg string) error {
+	if !esl.IsReady() {
+		return fmt.Errorf("esl not ready")
+	}
 	_, err := fmt.Fprint(esl.conn, msg)
 	if err != nil {
 		return err
@@ -209,109 +244,57 @@ func (esl *ESLConnection) InitEventBindings() error {
 	return err
 }
 
-func MergeEventBody(msg *ESLMessage) error {
-	bodyMSG, err := ParseESLStream(bufio.NewReader(strings.NewReader(msg.Body)))
-	if err != nil {
-		return err
-	}
-	for header, value := range bodyMSG.Headers {
-		if _, exists := msg.Headers[header]; !exists {
-			value, err = url.QueryUnescape(value)
-			if err != nil {
-				return err
-			}
-			msg.Headers[header] = value
-		}
-
-	}
-	if bodyMSG.Body != "" {
-		msg.Body = bodyMSG.Body
-	}
-	return nil
+func (esl *ESLConnection) SetStatus(s string) {
+	esl.Logger.Debug("change status from " + esl.status + " to " + s)
+	esl.status = s
 }
 
-func ParseESLStream(reader *bufio.Reader) (ESLMessage, error) {
-	//reader := bufio.NewReader(strings.NewReader(s))
-
-	msg := ESLMessage{
-		msgString:     "",
-		ContentType:   "",
-		ContentLength: 0,
-		Body:          "",
-		Headers:       map[string]string{},
+func (esl *ESLConnection) SendReadError(err error) {
+	select {
+	case esl.errorChannel <- err:
+		return
+	default:
+		return
 	}
+}
 
+func (esl *ESLConnection) ReadMessages() {
+	defer esl.SetStatus("stopped")
 	for {
-		var header, value string
-		line, err := reader.ReadString('\n')
-
+		l := esl.Logger.With("func", "ReadMessages")
+		msg, err := esl.readMSG() //EOF is returned if socket is closed
 		if err != nil {
-			return msg, err
+			l.Debug("end with error", "error", err)
+			esl.SendReadError(err)
+			return
 		}
-		msg.msgString += line
-
-		line = strings.TrimSpace(line)
-
-		if idx := strings.Index(line, ":"); idx > 0 {
-			header = line[:idx]
-			value = line[idx+2:]
-			msg.Headers[header] = value
-		}
-		if header == "Content-Type" {
-			msg.ContentType = value
-		}
-		if header == "Content-Length" {
-			msg.ContentLength, _ = strconv.ParseUint(value, 10, 64)
-		}
-		if line == "" {
+		l.Debug("got msg", "msg", msg)
+		if msg.ContentType == "auth/request" {
+			esl.replyChannel <- msg
+		} else if msg.ContentType == "text/disconnect-notice" {
+			esl.SendReadError(fmt.Errorf("disconnected with cause %s", msg.Body))
+			l.Debug("got text/disconnect-notice")
+			return
+		} else if msg.ContentType == "command/reply" {
+			esl.replyChannel <- msg
+		} else if msg.ContentType == "api/response" {
+			esl.replyChannel <- msg
+		} else if msg.ContentType == "text/event-plain" {
 			if msg.ContentLength > 0 {
-				bytes := make([]byte, msg.ContentLength)
-				readBytesCount, err := reader.Read(bytes)
-				if msg.ContentLength != uint64(readBytesCount) {
-					return msg, fmt.Errorf("not enough bytes read")
-				}
-				if err != nil {
-					return msg, err
-				}
-				msg.Body = string(bytes)
+				MergeEventBody(&msg)
 			}
-			return msg, nil
-		}
-	}
-}
-
-func (esl *ESLConnection) ReadEvents() {
-	for {
-		event, err := esl.readMSG() //EOF is returned if socket is closed
-		if err != nil {
-			esl.errorChannel <- err
-			return
-		}
-		if event.ContentType == "auth/request" {
-			esl.replyChannel <- event
-		} else if event.ContentType == "text/disconnect-notice" {
-			esl.errorChannel <- fmt.Errorf("disconnected with cause %s", event.Body)
-			return
-		} else if event.ContentType == "command/reply" {
-			esl.replyChannel <- event
-		} else if event.ContentType == "api/response" {
-			esl.replyChannel <- event
-		} else if event.ContentType == "text/event-plain" {
-			if event.ContentLength > 0 {
-				MergeEventBody(&event)
-			}
-			eventName := event.GetEventName()
+			eventName := msg.GetEventName()
 			if eventName == "BACKGROUND_JOB" {
-				jobUUID := event.Headers["Job-UUID"]
+				jobUUID := msg.Headers["Job-UUID"]
 				if jchan, exists := esl.jobs[jobUUID]; exists {
-					jchan <- event
+					jchan <- msg
 				}
 				delete(esl.jobs, jobUUID)
 			}
 			if handler, exists := esl.Handlers[eventName]; exists {
-				handler(event)
+				handler(msg)
 			} else if handler, exists := esl.Handlers["*"]; exists {
-				handler(event)
+				handler(msg)
 			}
 		}
 	}
@@ -324,17 +307,17 @@ func (esl *ESLConnection) Wait() error {
 
 func (esl *ESLConnection) CLose() error {
 	esl.writeMutex.Lock()
+	esl.SetStatus("closed")
 	defer esl.writeMutex.Unlock()
 	return esl.conn.Close()
 }
 
-func NewESLConnection(config ESLConfig) ESLConnection {
+func NewInboundESLConnection(config ESLConfig) ESLConnection {
 	return ESLConnection{
 		Handlers:      map[string]func(ESLMessage){},
 		EventBindings: []string{},
 		Filters:       map[string]string{},
 		Config:        config,
-		scanner:       &bufio.Scanner{},
 		conn:          nil,
 		reader:        &bufio.Reader{},
 		writer:        &bufio.Writer{},
@@ -342,29 +325,8 @@ func NewESLConnection(config ESLConfig) ESLConnection {
 		replyChannel:  make(chan ESLMessage),
 		errorChannel:  make(chan error),
 		jobs:          map[string]chan ESLMessage{},
+		LogMessages:   false,
+		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		status:        "created",
 	}
-}
-
-type ESLMessage struct {
-	msgString     string
-	ContentType   string
-	ContentLength uint64
-	Body          string
-	Headers       map[string]string
-}
-
-func (e *ESLMessage) GetReply() string {
-	return e.Headers["Reply-Text"]
-}
-
-func (e *ESLMessage) GetEventName() string {
-	return e.Headers["Event-Name"]
-}
-
-func (e *ESLMessage) Serialize() string {
-	s := ""
-	for hdr, value := range e.Headers {
-		s += fmt.Sprintf("[%s] : [%s]\n", hdr, value)
-	}
-	return s
 }

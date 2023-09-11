@@ -12,6 +12,13 @@
             "program": "${fileDirname}"
         },
         {
+            "name": "Server",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/examples"
+        },
+        {
             "name": "Test Current File",
             "type": "go",
             "request": "launch",

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/babakyakhchali/go-fsesl/esl"
+	"github.com/google/uuid"
 )
 
 func onNewEvent(event esl.ESLMessage) {
@@ -16,7 +17,7 @@ func onNewEvent(event esl.ESLMessage) {
 
 func TestESL(t *testing.T) {
 
-	esl := esl.NewESLConnection(esl.ESLConfig{
+	esl := esl.NewInboundESLConnection(esl.ESLConfig{
 		Host:         "127.0.0.1",
 		Port:         8021,
 		Password:     "ClueCon",
@@ -27,7 +28,7 @@ func TestESL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connection failed, error:%s", err)
 	}
-	go esl.ReadEvents()
+	go esl.ReadMessages()
 	_, err = esl.Authenticate()
 	if err != nil {
 		t.Fatalf("authentication failed, error:%s", err)
@@ -97,6 +98,32 @@ FreeSWITCH Version 1.10.8-release+git~20221014T193245Z~3510866140~64bit (git 351
 	}
 	if msg.Headers["Event-Name"] != "BACKGROUND_JOB" {
 		t.Fatalf("failed parsing event %v", msg.Headers)
+	}
+
+}
+
+func TestOutbound(t *testing.T) {
+	esl := esl.NewInboundESLConnection(esl.ESLConfig{
+		Host:         "127.0.0.1",
+		Port:         8021,
+		Password:     "ClueCon",
+		EnableBgJOBs: true,
+	})
+
+	err := esl.Init()
+	if err != nil {
+		t.Fatalf("failed initializing esl, error:%s", err)
+	}
+
+	fakeSessionID := uuid.NewString()
+	msg, err := esl.Execute("set", "", fakeSessionID, true, 1, uuid.NewString())
+
+	if err != nil {
+		t.Fatalf("outbound esl, error:%s", err)
+	}
+
+	if msg.GetReply() != fmt.Sprintf("-ERR invalid session id [%s]", fakeSessionID) {
+		t.Fatalf("outbound esl result missmatch reply:%s", msg.GetReply())
 	}
 
 }
