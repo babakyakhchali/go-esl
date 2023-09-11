@@ -110,7 +110,7 @@ func (esl *ESLConnection) BgAPI(api string, args string, jobUUID string) (ESLMes
 
 func (esl *ESLConnection) BgAPIWithResult(api string, args string, timeout time.Duration) (ESLMessage, error) {
 	jobUUID := uuid.New().String()
-	jchan := make(chan ESLMessage)
+	jchan := make(chan ESLMessage, 1)
 	esl.jobs[jobUUID] = jchan
 	esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
 
@@ -249,15 +249,6 @@ func (esl *ESLConnection) SetStatus(s string) {
 	esl.status = s
 }
 
-func (esl *ESLConnection) SendReadError(err error) {
-	select {
-	case esl.errorChannel <- err:
-		return
-	default:
-		return
-	}
-}
-
 func (esl *ESLConnection) ReadMessages() {
 	defer esl.SetStatus("stopped")
 	for {
@@ -265,14 +256,14 @@ func (esl *ESLConnection) ReadMessages() {
 		msg, err := esl.readMSG() //EOF is returned if socket is closed
 		if err != nil {
 			l.Debug("end with error", "error", err)
-			esl.SendReadError(err)
+			esl.errorChannel <- err
 			return
 		}
 		l.Debug("got msg", "msg", msg)
 		if msg.ContentType == "auth/request" {
 			esl.replyChannel <- msg
 		} else if msg.ContentType == "text/disconnect-notice" {
-			esl.SendReadError(fmt.Errorf("disconnected with cause %s", msg.Body))
+			esl.errorChannel <- fmt.Errorf("disconnected with cause %s", msg.Body)
 			l.Debug("got text/disconnect-notice")
 			return
 		} else if msg.ContentType == "command/reply" {
@@ -284,8 +275,12 @@ func (esl *ESLConnection) ReadMessages() {
 				MergeEventBody(&msg)
 			}
 			eventName := msg.GetEventName()
-			if eventName == "BACKGROUND_JOB" {
-				jobUUID := msg.Headers["Job-UUID"]
+			if eventName == "BACKGROUND_JOB" || eventName == "CHANNEL_EXECUTE_COMPLETE" {
+				key := "Application-UUID"
+				if eventName == "BACKGROUND_JOB" {
+					key = "Job-UUID"
+				}
+				jobUUID := msg.Headers[key]
 				if jchan, exists := esl.jobs[jobUUID]; exists {
 					jchan <- msg
 				}
@@ -323,7 +318,7 @@ func NewInboundESLConnection(config ESLConfig) ESLConnection {
 		writer:        &bufio.Writer{},
 		writeMutex:    sync.Mutex{},
 		replyChannel:  make(chan ESLMessage),
-		errorChannel:  make(chan error),
+		errorChannel:  make(chan error, 1),
 		jobs:          map[string]chan ESLMessage{},
 		LogMessages:   false,
 		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),

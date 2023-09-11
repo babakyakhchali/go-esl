@@ -95,7 +95,7 @@ func NewOutboundESLConnection(conn net.Conn) ESLConnection {
 		writer:        bufio.NewWriter(conn),
 		writeMutex:    sync.Mutex{},
 		replyChannel:  make(chan ESLMessage),
-		errorChannel:  make(chan error),
+		errorChannel:  make(chan error, 1),
 		jobs:          map[string]chan ESLMessage{},
 		LogMessages:   false,
 		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
