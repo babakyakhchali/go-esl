@@ -2,11 +2,14 @@ package esl
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/exp/slog"
 )
 
@@ -28,7 +31,45 @@ func (esl *ESLConnection) SendMSG(msg ESLMessage, uuid string) (ESLMessage, erro
 	return esl.SendRecvTimed(s, 0)
 }
 
-func (esl *ESLConnection) Execute(app string, args string, uuid string, lock bool, loops int, appUUID string) (ESLMessage, error) {
+type AsyncEslAction struct {
+	ErrorChannel  chan error
+	ResultChannel chan ESLMessage
+	SendResult    ESLMessage
+	timeout       time.Duration
+}
+
+func (action *AsyncEslAction) Wait() (ESLMessage, error) {
+	if action.timeout > 0 {
+		select {
+		case msg := <-action.ResultChannel:
+			return msg, nil
+		case err := <-action.ErrorChannel:
+			return ESLMessage{}, err
+		case <-time.After(action.timeout):
+			return ESLMessage{}, fmt.Errorf("execution timeout")
+		}
+	} else {
+		select {
+		case msg := <-action.ResultChannel:
+			return msg, nil
+		case err := <-action.ErrorChannel:
+			return ESLMessage{}, err
+		}
+	}
+
+}
+
+type ExecutionOptions struct {
+	App         string
+	Args        string
+	ChannelUUID string
+	Lock        bool
+	Loops       int
+	AppUUID     string
+	Timeout     time.Duration
+}
+
+func (esl *ESLConnection) Execute(options ExecutionOptions) (AsyncEslAction, error) {
 	msg := ESLMessage{
 		msgString:     "",
 		ContentType:   "",
@@ -37,22 +78,34 @@ func (esl *ESLConnection) Execute(app string, args string, uuid string, lock boo
 		Headers:       map[string]string{},
 	}
 
-	if lock {
+	if options.Lock {
 		msg.Headers["event-lock"] = "true"
 	}
 
 	msg.Headers["call-command"] = "execute"
-	msg.Headers["execute-app-name"] = app
-	if args != "" {
-		msg.Headers["execute-app-arg"] = args
+	msg.Headers["execute-app-name"] = options.App
+	if options.Args != "" {
+		msg.Headers["execute-app-arg"] = options.Args
 	}
-	if loops > 0 {
-		msg.Headers["loops"] = strconv.Itoa(loops)
+	if options.Loops > 0 {
+		msg.Headers["loops"] = strconv.Itoa(options.Loops)
 	}
-	if appUUID != "" {
-		msg.Headers["Event-UUID"] = appUUID
+	if options.AppUUID == "" {
+		options.AppUUID = uuid.NewString()
 	}
-	return esl.SendMSG(msg, uuid)
+
+	result := AsyncEslAction{
+		ErrorChannel:  make(chan error, 1),
+		ResultChannel: make(chan ESLMessage, 1),
+		SendResult:    ESLMessage{},
+	}
+
+	msg.Headers["Event-UUID"] = options.AppUUID
+	esl.jobs[options.AppUUID] = result
+
+	r, err := esl.SendMSG(msg, options.ChannelUUID)
+	result.SendResult = r
+	return result, err
 }
 
 type ESLServer struct {
@@ -79,7 +132,6 @@ func (server *ESLServer) Run() error {
 		esl.LogMessages = server.LogMessages
 		esl.Logger = server.Logger
 		esl.SetStatus("ready")
-		go esl.ReadMessages()
 		go server.ConnectionHandler(&esl)
 	}
 }
@@ -96,9 +148,10 @@ func NewOutboundESLConnection(conn net.Conn) ESLConnection {
 		writeMutex:    sync.Mutex{},
 		replyChannel:  make(chan ESLMessage),
 		errorChannel:  make(chan error, 1),
-		jobs:          map[string]chan ESLMessage{},
+		jobs:          map[string]AsyncEslAction{},
 		LogMessages:   false,
 		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		status:        "created",
+		replyTimeout:  0,
 	}
 }

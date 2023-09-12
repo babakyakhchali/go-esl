@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,10 +33,12 @@ type ESLConnection struct {
 	replyChannel  chan ESLMessage
 	errorChannel  chan error
 	status        string
-	jobs          map[string]chan ESLMessage
+	jobs          map[string]AsyncEslAction
 
-	Logger      *slog.Logger
-	LogMessages bool
+	Logger            *slog.Logger
+	LogMessages       bool
+	LogMessagesFormat string //full|brief empty is full
+	replyTimeout      time.Duration
 }
 
 func (esl *ESLConnection) Init() error {
@@ -108,18 +109,18 @@ func (esl *ESLConnection) BgAPI(api string, args string, jobUUID string) (ESLMes
 	return esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
 }
 
-func (esl *ESLConnection) BgAPIWithResult(api string, args string, timeout time.Duration) (ESLMessage, error) {
-	jobUUID := uuid.New().String()
-	jchan := make(chan ESLMessage, 1)
-	esl.jobs[jobUUID] = jchan
-	esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
-
-	select {
-	case nmsg := <-jchan:
-		return nmsg, nil
-	case <-time.After(timeout * time.Second):
-		return ESLMessage{}, fmt.Errorf("job timeout")
+func (esl *ESLConnection) BgAPIWithResult(api string, args string, timeout time.Duration) (AsyncEslAction, error) {
+	result := AsyncEslAction{
+		ErrorChannel:  make(chan error, 1),
+		ResultChannel: make(chan ESLMessage, 1),
+		SendResult:    ESLMessage{},
+		timeout:       timeout,
 	}
+	jobUUID := uuid.New().String()
+	esl.jobs[jobUUID] = result
+	msg, err := esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
+	result.SendResult = msg
+	return result, err
 }
 
 func (esl *ESLConnection) SendCMD(msg string) (ESLMessage, error) {
@@ -182,22 +183,6 @@ func (esl *ESLConnection) Write(msg string) error {
 	return nil
 }
 
-func (esl *ESLConnection) Authenticate() (ESLMessage, error) {
-	msg := <-esl.replyChannel
-
-	if msg.ContentType == "auth/request" {
-		msg, err := esl.SendCMD("auth " + esl.Config.Password)
-		if err != nil {
-			return msg, err
-		}
-		if msg.GetReply() != "+OK accepted" {
-			return msg, fmt.Errorf("authentication Error")
-		}
-
-	}
-	return msg, nil
-}
-
 func (esl *ESLConnection) AddFilter(eventHeader string, headerValue string) (ESLMessage, error) {
 	event, err := esl.SendCMDf("filter %s %s", eventHeader, headerValue)
 	if err != nil {
@@ -249,28 +234,37 @@ func (esl *ESLConnection) SetStatus(s string) {
 	esl.status = s
 }
 
+func (esl *ESLConnection) notifyJobsForError(err error) {
+	for _, result := range esl.jobs {
+		result.ErrorChannel <- err
+	}
+}
+
 func (esl *ESLConnection) ReadMessages() {
 	defer esl.SetStatus("stopped")
 	for {
 		l := esl.Logger.With("func", "ReadMessages")
+		l.Debug("waiting for esl msg")
 		msg, err := esl.readMSG() //EOF is returned if socket is closed
 		if err != nil {
 			l.Debug("end with error", "error", err)
 			esl.errorChannel <- err
+			esl.notifyJobsForError(err)
 			return
 		}
-		l.Debug("got msg", "msg", msg)
-		if msg.ContentType == "auth/request" {
+
+		if msg.ContentType == ContentTypeAuthRequest {
 			esl.replyChannel <- msg
-		} else if msg.ContentType == "text/disconnect-notice" {
+		} else if msg.ContentType == ContentTypeTextDisconnectNotice {
 			esl.errorChannel <- fmt.Errorf("disconnected with cause %s", msg.Body)
+			esl.notifyJobsForError(err)
 			l.Debug("got text/disconnect-notice")
 			return
-		} else if msg.ContentType == "command/reply" {
+		} else if msg.ContentType == ContentTypeCommandReply {
 			esl.replyChannel <- msg
-		} else if msg.ContentType == "api/response" {
+		} else if msg.ContentType == ContentTypeApiResponse {
 			esl.replyChannel <- msg
-		} else if msg.ContentType == "text/event-plain" {
+		} else if msg.ContentType == ContentTypeTextEventPlain {
 			if msg.ContentLength > 0 {
 				MergeEventBody(&msg)
 			}
@@ -281,8 +275,8 @@ func (esl *ESLConnection) ReadMessages() {
 					key = "Job-UUID"
 				}
 				jobUUID := msg.Headers[key]
-				if jchan, exists := esl.jobs[jobUUID]; exists {
-					jchan <- msg
+				if asyncResult, exists := esl.jobs[jobUUID]; exists {
+					asyncResult.ResultChannel <- msg
 				}
 				delete(esl.jobs, jobUUID)
 			}
@@ -291,6 +285,14 @@ func (esl *ESLConnection) ReadMessages() {
 			} else if handler, exists := esl.Handlers["*"]; exists {
 				handler(msg)
 			}
+		}
+		if esl.LogMessages {
+			if esl.LogMessagesFormat == "brief" {
+				l.Debug("new esl msg", "msg", msg.StringBrief())
+			} else {
+				l.Debug("new esl msg", "msg", msg.String())
+			}
+
 		}
 	}
 }
@@ -305,23 +307,4 @@ func (esl *ESLConnection) CLose() error {
 	esl.SetStatus("closed")
 	defer esl.writeMutex.Unlock()
 	return esl.conn.Close()
-}
-
-func NewInboundESLConnection(config ESLConfig) ESLConnection {
-	return ESLConnection{
-		Handlers:      map[string]func(ESLMessage){},
-		EventBindings: []string{},
-		Filters:       map[string]string{},
-		Config:        config,
-		conn:          nil,
-		reader:        &bufio.Reader{},
-		writer:        &bufio.Writer{},
-		writeMutex:    sync.Mutex{},
-		replyChannel:  make(chan ESLMessage),
-		errorChannel:  make(chan error, 1),
-		jobs:          map[string]chan ESLMessage{},
-		LogMessages:   false,
-		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		status:        "created",
-	}
 }

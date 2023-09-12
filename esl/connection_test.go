@@ -46,11 +46,11 @@ func TestESL(t *testing.T) {
 		t.Fatalf("api version bad result , body:%s", result.Body)
 	}
 
-	result, err = esl.BgAPIWithResult("version", "", 3*time.Second)
+	asyncResult, err := esl.BgAPIWithResult("version", "", 3*time.Second)
 	if err != nil {
 		t.Fatalf("bgapi version failed, error:%s", err)
 	}
-	if !strings.HasPrefix(result.Body, "Free") {
+	if !strings.HasPrefix(asyncResult.SendResult.Body, "Free") {
 		t.Fatalf("api version bad result , body:%s", result.Body)
 	}
 	time.Sleep(2 * time.Second)
@@ -103,27 +103,35 @@ FreeSWITCH Version 1.10.8-release+git~20221014T193245Z~3510866140~64bit (git 351
 }
 
 func TestOutbound(t *testing.T) {
-	esl := esl.NewInboundESLConnection(esl.ESLConfig{
+	con := esl.NewInboundESLConnection(esl.ESLConfig{
 		Host:         "127.0.0.1",
 		Port:         8021,
 		Password:     "ClueCon",
 		EnableBgJOBs: true,
 	})
 
-	err := esl.Init()
+	err := con.Init()
 	if err != nil {
 		t.Fatalf("failed initializing esl, error:%s", err)
 	}
 
 	fakeSessionID := uuid.NewString()
-	msg, err := esl.Execute("set", "", fakeSessionID, true, 1, uuid.NewString())
+	res, err := con.Execute(esl.ExecutionOptions{
+		App:         "set",
+		Args:        "a=b",
+		ChannelUUID: fakeSessionID,
+		Lock:        true,
+		Loops:       1,
+		AppUUID:     "",
+		Timeout:     3,
+	}) //"set", "", fakeSessionID, true, 1, uuid.NewString()
 
 	if err != nil {
 		t.Fatalf("outbound esl, error:%s", err)
 	}
 
-	if msg.GetReply() != fmt.Sprintf("-ERR invalid session id [%s]", fakeSessionID) {
-		t.Fatalf("outbound esl result missmatch reply:%s", msg.GetReply())
+	if res.SendResult.GetReply() != fmt.Sprintf("-ERR invalid session id [%s]", fakeSessionID) {
+		t.Fatalf("outbound esl result missmatch reply:%s", res.SendResult.GetReply())
 	}
 
 }

@@ -32,3 +32,11 @@ func (e *ESLMessage) Serialize() string {
 func (e *ESLMessage) String() string {
 	return e.Serialize()
 }
+
+func (e *ESLMessage) StringBrief() string {
+	if e.ContentType == ContentTypeTextEventPlain {
+		return fmt.Sprintf("Event-Name:%s, UniqueID:%s", e.Headers[MessageHeaderEventName], e.Headers[MessageHeaderUniqueID])
+	} else {
+		return e.String()
+	}
+}
