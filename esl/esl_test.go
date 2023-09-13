@@ -50,8 +50,12 @@ func TestESL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bgapi version failed, error:%s", err)
 	}
-	if !strings.HasPrefix(asyncResult.SendResult.Body, "Free") {
-		t.Fatalf("api version bad result , body:%s", result.Body)
+	result, err = asyncResult.Wait()
+	if err != nil {
+		t.Fatalf("bgapi wait failed, error:%s", err)
+	}
+	if !strings.HasPrefix(result.Body, "Free") {
+		t.Fatalf("bgapi version bad result , body:%s", result.Body)
 	}
 	time.Sleep(2 * time.Second)
 	esl.CLose()
