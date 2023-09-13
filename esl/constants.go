@@ -1,6 +1,11 @@
 package esl
 
 const (
+	EventBackgroundJob          = "BACKGROUND_JOB"
+	EventChannelExecuteComplete = "CHANNEL_EXECUTE_COMPLETE"
+)
+
+const (
 	ContentTypeTextDisconnectNotice = "text/disconnect-notice"
 	ContentTypeTextEventPlain       = "text/event-plain"
 	ContentTypeTextEventJSON        = "text/event-json"

@@ -23,19 +23,18 @@ func TestESL(t *testing.T) {
 		Password:     "ClueCon",
 		EnableBgJOBs: true,
 	})
-	esl.Handlers["*"] = onNewEvent
 	err := esl.Connect()
 	if err != nil {
 		t.Fatalf("connection failed, error:%s", err)
 	}
-	go esl.ReadMessages()
+
+	_, err = esl.AddGlobalEventHandler(onNewEvent)
+	if err != nil {
+		t.Fatalf("adding event handlers failed, error:%s", err)
+	}
 	_, err = esl.Authenticate()
 	if err != nil {
 		t.Fatalf("authentication failed, error:%s", err)
-	}
-	err = esl.InitEventBindings()
-	if err != nil {
-		t.Fatalf("event binding failed, error:%s", err)
 	}
 
 	result, err := esl.API("version", "")
@@ -114,9 +113,9 @@ func TestOutbound(t *testing.T) {
 		EnableBgJOBs: true,
 	})
 
-	err := con.Init()
+	err := con.Connect()
 	if err != nil {
-		t.Fatalf("failed initializing esl, error:%s", err)
+		t.Fatalf("failed connecting esl, error:%s", err)
 	}
 
 	fakeSessionID := uuid.NewString()

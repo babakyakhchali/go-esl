@@ -23,47 +23,52 @@ func onEvent(e esl.ESLMessage) {
         <action application="set" data="tts_voice=kal"/>
         <action application="speak" data="This is flite on FreeSWITCH"/>*/
 
-func OnNewConnection(conn *esl.ESLConnection) {
-	conn.LogMessages = true
-	conn.LogMessagesFormat = esl.MessageLogFormatBrief
-	conn.EventBindings = []string{}
-	conn.Handlers["*"] = onEvent
-	conn.InitEventBindings()
-	go conn.ReadMessages()
+func OnNewConnection(conn *esl.EslOutboundConnection) {
+
+	conn.EnableMessageLogging(esl.MessageLogFormatBrief)
+	err := conn.Connect()
+	if err != nil {
+		conn.CLose()
+		return
+	}
+	conn.EnableAsync() //to use Wait for execute result enable async operations
+	//this starts reading from socket in a separte goroutin
+
 	session := esl.EslSession{
 		Conn: conn,
 	}
-	channelData, err := session.Connect()
+
 	if err != nil {
-		panic(err)
+		conn.CLose()
+		return
 	}
-	l := logger.With("uuid", channelData.Headers["Unique-ID"])
+	l := logger.With("uuid", session.Conn.GetChannelData().GetHeader(esl.MessageHeaderUniqueID))
 	l.Info("connected")
-	msg, err := session.MyEvents()
+	msg, err := session.MyEvents(map[string]func(esl.ESLMessage){"*": onEvent})
 	if err != nil {
 		return
 	}
 	l.Debug(msg.String())
 
-	msg, err = session.Answer()
+	_, err = session.Answer()
 	if err != nil {
 		return
 	}
 	session.Set("tts_voice", "kal")
-	msg, err = session.Set("tts_engine", "flite")
+	_, err = session.Set("tts_engine", "flite")
 	if err != nil {
 		return
 	}
 
-	msg, err = session.Execute("speak", "hi, this is a test ivr tts, bye!")
+	_, err = session.Execute("speak", "hi, this is a test ivr tts, bye!")
 	if err != nil {
 		return
 	}
-	msg, err = session.Execute("sleep", "1000")
+	_, err = session.Execute("sleep", "1000")
 	if err != nil {
 		return
 	}
-	msg, err = session.Execute("hangup", "NORMAL_CLEARING")
+	_, err = session.Execute("hangup", "NORMAL_CLEARING")
 	if err != nil {
 		return
 	}

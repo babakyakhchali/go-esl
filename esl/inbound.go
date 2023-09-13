@@ -3,17 +3,19 @@ package esl
 import (
 	"bufio"
 	"fmt"
-	"os"
-	"sync"
-
-	"golang.org/x/exp/slog"
+	"net"
 )
 
-func (esl *ESLConnection) Authenticate() (ESLMessage, error) {
+type EslInboundConnection struct {
+	ESLConnection
+	config ESLConfig
+}
+
+func (esl *EslInboundConnection) Authenticate() (ESLMessage, error) {
 	msg := <-esl.replyChannel
 
 	if msg.ContentType == "auth/request" {
-		msg, err := esl.SendCMD("auth " + esl.Config.Password)
+		msg, err := esl.SendCMD("auth " + esl.config.Password)
 		if err != nil {
 			return msg, err
 		}
@@ -25,22 +27,23 @@ func (esl *ESLConnection) Authenticate() (ESLMessage, error) {
 	return msg, nil
 }
 
-func NewInboundESLConnection(config ESLConfig) ESLConnection {
-	return ESLConnection{
-		Handlers:      map[string]func(ESLMessage){},
-		EventBindings: []string{},
-		Filters:       map[string]string{},
-		Config:        config,
-		conn:          nil,
-		reader:        &bufio.Reader{},
-		writer:        &bufio.Writer{},
-		writeMutex:    sync.Mutex{},
-		replyChannel:  make(chan ESLMessage),
-		errorChannel:  make(chan error, 1),
-		jobs:          map[string]AsyncEslAction{},
-		LogMessages:   false,
-		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		status:        "created",
-		replyTimeout:  0,
+func (esl *EslInboundConnection) Connect() error {
+	var err error
+	esl.SetStatus("connecting")
+	esl.socket, err = net.Dial("tcp", fmt.Sprintf("%s:%d", esl.config.Host, esl.config.Port))
+	if err != nil {
+		return err
+	}
+	esl.Logger.Debug("connected", "config", esl.config)
+	esl.reader = bufio.NewReader(esl.socket)
+	esl.writer = bufio.NewWriter(esl.socket)
+	esl.SetStatus("connected")
+	return nil
+}
+
+func NewInboundESLConnection(config ESLConfig) EslInboundConnection {
+	return EslInboundConnection{
+		ESLConnection: NewEslConnection(),
+		config:        config,
 	}
 }

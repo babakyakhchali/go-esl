@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
 )
 
@@ -22,55 +22,33 @@ type ESLConfig struct {
 }
 
 type ESLConnection struct {
-	Handlers      map[string]func(ESLMessage)
-	EventBindings []string
-	Filters       map[string]string
-	Config        ESLConfig
-	conn          net.Conn
-	reader        *bufio.Reader
-	writer        *bufio.Writer
-	writeMutex    sync.Mutex
-	replyChannel  chan ESLMessage
-	errorChannel  chan error
-	status        string
-	jobs          map[string]AsyncEslAction
+	Handlers     map[string]func(ESLMessage)
+	enableAsync  bool
+	Filters      map[string]string
+	socket       net.Conn
+	reader       *bufio.Reader
+	writer       *bufio.Writer
+	writeMutex   sync.Mutex
+	replyChannel chan ESLMessage
+	errorChannel chan error
+	status       string
+	jobs         map[string]AsyncEslAction
 
 	Logger            *slog.Logger
-	LogMessages       bool
-	LogMessagesFormat string //full|brief empty is full
+	logMessages       bool
+	logMessagesFormat string //full|brief empty is full
 	replyTimeout      time.Duration
 }
 
-func (esl *ESLConnection) Init() error {
-	err := esl.Connect()
-	if err != nil {
-		return err
-	}
-
-	go esl.ReadMessages()
-	_, err = esl.Authenticate()
-	if err != nil {
-		return err
-	}
-	err = esl.InitEventBindings()
-	if err != nil {
-		return err
-	}
-	return nil
+func (esl *ESLConnection) EnableAsync() (ESLMessage, error) {
+	esl.enableAsync = true
+	cmd := fmt.Sprintf("events plain %s %s ", EventBackgroundJob, EventChannelExecuteComplete)
+	return esl.SendCMDf(cmd)
 }
 
-func (esl *ESLConnection) Connect() error {
-	var err error
-	esl.SetStatus("connecting")
-	esl.conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", esl.Config.Host, esl.Config.Port))
-	if err != nil {
-		return err
-	}
-	esl.Logger.Debug("connected", "config", esl.Config)
-	esl.reader = bufio.NewReader(esl.conn)
-	esl.writer = bufio.NewWriter(esl.conn)
-	esl.SetStatus("ready")
-	return nil
+func (esl *ESLConnection) EnableMessageLogging(format string) {
+	esl.logMessages = true
+	esl.logMessagesFormat = format
 }
 
 func (esl *ESLConnection) ReadLine() (string, error) {
@@ -165,7 +143,7 @@ func (esl *ESLConnection) SendCMDf(msg string, a ...any) (ESLMessage, error) {
 }
 
 func (esl *ESLConnection) Writef(msg string, a ...any) error {
-	_, err := fmt.Fprintf(esl.conn, msg, a...)
+	_, err := fmt.Fprintf(esl.socket, msg, a...)
 	if err != nil {
 		return err
 	}
@@ -176,7 +154,7 @@ func (esl *ESLConnection) Write(msg string) error {
 	if !esl.IsReady() {
 		return fmt.Errorf("esl not ready")
 	}
-	_, err := fmt.Fprint(esl.conn, msg)
+	_, err := fmt.Fprint(esl.socket, msg)
 	if err != nil {
 		return err
 	}
@@ -207,26 +185,43 @@ func (esl *ESLConnection) InitFilters() error {
 	return nil
 }
 
-func (esl *ESLConnection) InitEventBindings() error {
-	if esl.Config.EnableBgJOBs && !slices.Contains(esl.EventBindings, "BACKGROUND_JOB") {
-		esl.EventBindings = append(esl.EventBindings, "BACKGROUND_JOB")
+func (esl *ESLConnection) ApplyEventBindings() (ESLMessage, error) {
+	cmd := "events plain "
+	for eventName := range esl.Handlers {
+		cmd += " " + eventName
 	}
-	if len(esl.EventBindings) == 0 {
-		return nil
+	if esl.enableAsync {
+		cmd += fmt.Sprintf(" %s %s ", EventBackgroundJob, EventChannelExecuteComplete)
 	}
-	events := strings.Join(esl.EventBindings, " ")
-	cmd := fmt.Sprintf("events plain %s", events)
-	if events == "*" {
-		cmd = "events plain all"
+	return esl.SendCMDf(cmd)
+}
+
+func (esl *ESLConnection) AddEventBinding(eventName string, handler func(ESLMessage)) (msg ESLMessage, err error) {
+	if _, exists := esl.Handlers[eventName]; exists {
+		return
 	}
-	event, err := esl.SendCMDf(cmd)
+	esl.Handlers[eventName] = handler
+	msg, err = esl.SendCMDf("events plain " + eventName)
 	if err != nil {
-		return err
+		return
 	}
-	if reply := event.GetReply(); !strings.HasPrefix(reply, "+OK") {
-		return fmt.Errorf("adding event binding for [%s] failed, esl reply:%s", events, reply)
+	return
+}
+
+func (esl *ESLConnection) AddGlobalEventHandler(handler func(ESLMessage)) (ESLMessage, error) {
+	esl.Handlers["*"] = handler
+	return esl.SendCMDf("events plain all")
+}
+
+func (esl *ESLConnection) AddEventBindings(bindings map[string]func(ESLMessage)) (ESLMessage, error) {
+	for eventName, handler := range bindings {
+		esl.Handlers[eventName] = handler
 	}
-	return err
+	return esl.ApplyEventBindings()
+}
+
+func (esl *ESLConnection) EnableAsyncSupport() {
+	esl.enableAsync = true
 }
 
 func (esl *ESLConnection) SetStatus(s string) {
@@ -241,6 +236,7 @@ func (esl *ESLConnection) notifyJobsForError(err error) {
 }
 
 func (esl *ESLConnection) ReadMessages() {
+	esl.SetStatus("ready")
 	defer esl.SetStatus("stopped")
 	for {
 		l := esl.Logger.With("func", "ReadMessages")
@@ -269,10 +265,10 @@ func (esl *ESLConnection) ReadMessages() {
 				MergeEventBody(&msg)
 			}
 			eventName := msg.GetEventName()
-			if eventName == "BACKGROUND_JOB" || eventName == "CHANNEL_EXECUTE_COMPLETE" {
-				key := "Application-UUID"
-				if eventName == "BACKGROUND_JOB" {
-					key = "Job-UUID"
+			if esl.enableAsync && (eventName == EventBackgroundJob || eventName == EventChannelExecuteComplete) {
+				key := MessageHeaderApplicationUUID
+				if eventName == EventBackgroundJob {
+					key = MessageHeaderJobUuid
 				}
 				jobUUID := msg.Headers[key]
 				if asyncResult, exists := esl.jobs[jobUUID]; exists {
@@ -286,8 +282,8 @@ func (esl *ESLConnection) ReadMessages() {
 				handler(msg)
 			}
 		}
-		if esl.LogMessages {
-			if esl.LogMessagesFormat == "brief" {
+		if esl.logMessages {
+			if esl.logMessagesFormat == "brief" {
 				l.Debug("new esl msg", "msg", msg.StringBrief())
 			} else {
 				l.Debug("new esl msg", "msg", msg.String())
@@ -306,5 +302,23 @@ func (esl *ESLConnection) CLose() error {
 	esl.writeMutex.Lock()
 	esl.SetStatus("closed")
 	defer esl.writeMutex.Unlock()
-	return esl.conn.Close()
+	return esl.socket.Close()
+}
+
+func NewEslConnection() ESLConnection {
+	return ESLConnection{
+		Handlers:     map[string]func(ESLMessage){},
+		Filters:      map[string]string{},
+		socket:       nil,
+		reader:       &bufio.Reader{},
+		writer:       &bufio.Writer{},
+		writeMutex:   sync.Mutex{},
+		replyChannel: make(chan ESLMessage),
+		errorChannel: make(chan error, 1),
+		jobs:         map[string]AsyncEslAction{},
+		logMessages:  false,
+		Logger:       slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		status:       "created",
+		replyTimeout: 0,
+	}
 }

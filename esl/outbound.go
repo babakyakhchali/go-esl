@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -110,7 +108,7 @@ func (esl *ESLConnection) Execute(options ExecutionOptions) (AsyncEslAction, err
 
 type ESLServer struct {
 	Address           string
-	ConnectionHandler func(*ESLConnection)
+	ConnectionHandler func(*EslOutboundConnection)
 	Logger            *slog.Logger
 	LogMessages       bool
 }
@@ -129,29 +127,34 @@ func (server *ESLServer) Run() error {
 			return err
 		}
 		esl := NewOutboundESLConnection(conn)
-		esl.LogMessages = server.LogMessages
-		esl.Logger = server.Logger
-		esl.SetStatus("ready")
 		go server.ConnectionHandler(&esl)
 	}
 }
 
-func NewOutboundESLConnection(conn net.Conn) ESLConnection {
-	return ESLConnection{
-		Handlers:      map[string]func(ESLMessage){},
-		EventBindings: []string{},
-		Filters:       map[string]string{},
-		Config:        ESLConfig{},
-		conn:          conn,
-		reader:        bufio.NewReader(conn),
-		writer:        bufio.NewWriter(conn),
-		writeMutex:    sync.Mutex{},
-		replyChannel:  make(chan ESLMessage),
-		errorChannel:  make(chan error, 1),
-		jobs:          map[string]AsyncEslAction{},
-		LogMessages:   false,
-		Logger:        slog.New(slog.NewTextHandler(os.Stdout, nil)),
-		status:        "created",
-		replyTimeout:  0,
+type EslOutboundConnection struct {
+	ESLConnection
+	channelData ESLMessage
+}
+
+func (esl *EslOutboundConnection) Connect() error {
+	esl.reader = bufio.NewReader(esl.socket)
+	esl.writer = bufio.NewWriter(esl.socket)
+	esl.SetStatus("ready") //this is hack :(
+	go esl.ReadMessages()
+	msg, err := esl.SendCMD("connect")
+	esl.channelData = msg
+	return err
+}
+
+func (esl *EslOutboundConnection) GetChannelData() ESLMessage {
+	return esl.channelData
+}
+
+func NewOutboundESLConnection(socket net.Conn) EslOutboundConnection {
+	conn := EslOutboundConnection{
+		ESLConnection: NewEslConnection(),
+		channelData:   ESLMessage{},
 	}
+	conn.socket = socket
+	return conn
 }

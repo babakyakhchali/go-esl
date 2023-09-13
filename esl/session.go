@@ -1,7 +1,8 @@
 package esl
 
 type EslSession struct {
-	Conn *ESLConnection
+	Conn        *EslOutboundConnection
+	ChannelData ESLMessage
 }
 
 func (session *EslSession) Execute(app string, args string) (msg ESLMessage, err error) {
@@ -21,11 +22,8 @@ func (session *EslSession) Execute(app string, args string) (msg ESLMessage, err
 	return
 }
 
-func (session *EslSession) Connect() (msg ESLMessage, err error) {
-	return session.Conn.SendCMD("connect")
-}
-
-func (session *EslSession) MyEvents() (msg ESLMessage, err error) {
+func (session *EslSession) MyEvents(handlers map[string]func(ESLMessage)) (msg ESLMessage, err error) {
+	session.Conn.Handlers = handlers
 	return session.Conn.SendCMD("myevents")
 }
 
