@@ -42,9 +42,9 @@ func OnNewConnection(conn *esl.EslOutboundConnection) {
 		conn.CLose()
 		return
 	}
-	l := logger.With("uuid", session.Conn.GetChannelData().GetHeader(esl.MessageHeaderUniqueID))
+	l := logger.With("uuid", session.GetChannelData().GetHeader(esl.MessageHeaderUniqueID))
 	l.Info("connected")
-	msg, err := session.MyEvents(map[string]func(esl.ESLMessage){"*": onEvent})
+	msg, err := session.Conn.MyEvents(map[string]func(esl.ESLMessage){"*": onEvent})
 	if err != nil {
 		return
 	}

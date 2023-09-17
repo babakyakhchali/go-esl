@@ -146,10 +146,6 @@ func (esl *EslOutboundConnection) Connect() error {
 	return err
 }
 
-func (esl *EslOutboundConnection) GetChannelData() ESLMessage {
-	return esl.channelData
-}
-
 func NewOutboundESLConnection(socket net.Conn) EslOutboundConnection {
 	conn := EslOutboundConnection{
 		ESLConnection: NewEslConnection(),

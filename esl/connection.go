@@ -134,7 +134,7 @@ func (esl *ESLConnection) SendRecvTimed(msg string, timeout time.Duration) (ESLM
 }
 
 func (esl *ESLConnection) SendCMDTimed(msg string, timeout time.Duration) (ESLMessage, error) {
-	return esl.SendRecvTimed(msg+"\n\n", timeout)
+	return esl.SendRecvTimed(msg, timeout)
 }
 
 func (esl *ESLConnection) SendCMDf(msg string, a ...any) (ESLMessage, error) {
@@ -172,6 +172,17 @@ func (esl *ESLConnection) AddFilter(eventHeader string, headerValue string) (ESL
 	return event, err
 }
 
+func (esl *ESLConnection) DeleteFilter(eventHeader string, headerValue string) (ESLMessage, error) {
+	event, err := esl.SendCMDf("filter delete %s %s", eventHeader, headerValue)
+	if err != nil {
+		return event, err
+	}
+	if reply := event.GetReply(); !strings.HasPrefix(reply, "+OK") {
+		return event, fmt.Errorf("adding filter [%s] [%s] failed, esl reply:%s", eventHeader, headerValue, reply)
+	}
+	return event, err
+}
+
 func (esl *ESLConnection) InitFilters() error {
 	for k, v := range esl.Filters {
 		event, err := esl.SendCMDf("filter %s %s", k, v)
@@ -187,12 +198,17 @@ func (esl *ESLConnection) InitFilters() error {
 
 func (esl *ESLConnection) ApplyEventBindings() (ESLMessage, error) {
 	cmd := "events plain "
-	for eventName := range esl.Handlers {
-		cmd += " " + eventName
+	if _, exists := esl.Handlers["*"]; exists {
+		cmd += "all"
+	} else {
+		for eventName := range esl.Handlers {
+			cmd += " " + eventName
+		}
+		if esl.enableAsync {
+			cmd += fmt.Sprintf(" %s %s ", EventBackgroundJob, EventChannelExecuteComplete)
+		}
 	}
-	if esl.enableAsync {
-		cmd += fmt.Sprintf(" %s %s ", EventBackgroundJob, EventChannelExecuteComplete)
-	}
+
 	return esl.SendCMDf(cmd)
 }
 
@@ -235,8 +251,9 @@ func (esl *ESLConnection) notifyJobsForError(err error) {
 	}
 }
 
+// ReadMessages read esl messages from socket, if handlers are registered for events they will be run in
+// new goroutines
 func (esl *ESLConnection) ReadMessages() {
-	esl.SetStatus("ready")
 	defer esl.SetStatus("stopped")
 	for {
 		l := esl.Logger.With("func", "ReadMessages")
@@ -277,9 +294,9 @@ func (esl *ESLConnection) ReadMessages() {
 				delete(esl.jobs, jobUUID)
 			}
 			if handler, exists := esl.Handlers[eventName]; exists {
-				handler(msg)
+				go handler(msg)
 			} else if handler, exists := esl.Handlers["*"]; exists {
-				handler(msg)
+				go handler(msg)
 			}
 		}
 		if esl.logMessages {
@@ -296,6 +313,11 @@ func (esl *ESLConnection) ReadMessages() {
 func (esl *ESLConnection) Wait() error {
 	err := <-esl.errorChannel
 	return err
+}
+
+func (esl *ESLConnection) MyEvents(handlers map[string]func(ESLMessage)) (msg ESLMessage, err error) {
+	esl.Handlers = handlers
+	return esl.SendCMD("myevents")
 }
 
 func (esl *ESLConnection) CLose() error {

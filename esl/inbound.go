@@ -37,7 +37,8 @@ func (esl *EslInboundConnection) Connect() error {
 	esl.Logger.Debug("connected", "config", esl.config)
 	esl.reader = bufio.NewReader(esl.socket)
 	esl.writer = bufio.NewWriter(esl.socket)
-	esl.SetStatus("connected")
+	go esl.ReadMessages()
+	esl.SetStatus("ready")
 	return nil
 }
 

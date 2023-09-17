@@ -45,3 +45,27 @@ func (e ESLMessage) StringBrief() string {
 		return e.String()
 	}
 }
+
+type EslChannelExecuteResult struct {
+	ApplicationData     string
+	ApplicationResponse string
+	ApplicationUUID     string
+	Application         string
+	channelUUID         string
+}
+
+/*
+Application: playback
+Application-Data: test.wav
+Application-Response: FILE%20NOT%20FOUND
+Application-UUID: 0b492cff-0b48-4d7a-93cd-6629c9c28388
+*/
+func (msg ESLMessage) GetExecuteInfo() EslChannelExecuteResult {
+	return EslChannelExecuteResult{
+		ApplicationData:     msg.GetHeader("Application-Data"),
+		ApplicationResponse: msg.GetHeader("Application-Response"),
+		ApplicationUUID:     msg.GetHeader("Application-UUID"),
+		Application:         msg.GetHeader("Application"),
+		channelUUID:         msg.GetHeader(MessageHeaderUniqueID),
+	}
+}
