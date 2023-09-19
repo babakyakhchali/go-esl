@@ -87,14 +87,17 @@ func (esl *ESLConnection) BgAPI(api string, args string, jobUUID string) (ESLMes
 	return esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
 }
 
-func (esl *ESLConnection) BgAPIWithResult(api string, args string, timeout time.Duration) (AsyncEslAction, error) {
+func (esl *ESLConnection) BgAPIWithResult(api string, args string, jobUUID string, timeout time.Duration) (AsyncEslAction, error) {
 	result := AsyncEslAction{
 		ErrorChannel:  make(chan error, 1),
 		ResultChannel: make(chan ESLMessage, 1),
 		SendResult:    ESLMessage{},
 		timeout:       timeout,
 	}
-	jobUUID := uuid.New().String()
+	if jobUUID == "" {
+		jobUUID = uuid.New().String()
+	}
+
 	esl.jobs[jobUUID] = result
 	msg, err := esl.SendCMD(fmt.Sprintf("bgapi %s %s\nJob-UUID: %s", api, args, jobUUID))
 	result.SendResult = msg

@@ -45,7 +45,7 @@ func TestESL(t *testing.T) {
 		t.Fatalf("api version bad result , body:%s", result.Body)
 	}
 
-	asyncResult, err := esl.BgAPIWithResult("version", "", 3*time.Second)
+	asyncResult, err := esl.BgAPIWithResult("version", "", "", 3*time.Second)
 	if err != nil {
 		t.Fatalf("bgapi version failed, error:%s", err)
 	}
