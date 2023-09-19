@@ -1,4 +1,4 @@
-module github.com/babakyakhchali/go-fsesl
+module github.com/babakyakhchali/go-esl
 
 go 1.19
 
