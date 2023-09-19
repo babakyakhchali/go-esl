@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/babakyakhchali/go-fsesl/esl"
+	"github.com/babakyakhchali/go-esl/esl"
 	"golang.org/x/exp/slices"
 	"golang.org/x/exp/slog"
 )

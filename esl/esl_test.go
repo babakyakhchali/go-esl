@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/babakyakhchali/go-fsesl/esl"
+	"github.com/babakyakhchali/go-esl/esl"
 	"github.com/google/uuid"
 )
 
