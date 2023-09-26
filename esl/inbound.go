@@ -7,7 +7,7 @@ import (
 )
 
 type EslInboundConnection struct {
-	ESLConnection
+	*ESLConnection
 	config ESLConfig
 }
 
@@ -34,7 +34,7 @@ func (esl *EslInboundConnection) Connect() error {
 	if err != nil {
 		return err
 	}
-	esl.Logger.Debug("connected", "config", esl.config)
+	esl.logger.Debug("connected", "config", esl.config)
 	esl.reader = bufio.NewReader(esl.socket)
 	esl.writer = bufio.NewWriter(esl.socket)
 	go esl.ReadMessages()

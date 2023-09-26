@@ -22,7 +22,7 @@ type ESLConfig struct {
 }
 
 type ESLConnection struct {
-	Handlers     map[string]func(ESLMessage)
+	handlers     map[string]func(ESLMessage)
 	enableAsync  bool
 	Filters      map[string]string
 	socket       net.Conn
@@ -34,7 +34,7 @@ type ESLConnection struct {
 	status       string
 	jobs         map[string]AsyncEslAction
 
-	Logger            *slog.Logger
+	logger            *slog.Logger
 	logMessages       bool
 	logMessagesFormat string //full|brief empty is full
 	replyTimeout      time.Duration
@@ -113,13 +113,13 @@ func (esl *ESLConnection) IsReady() bool {
 }
 
 func (esl *ESLConnection) SendRecvTimed(msg string, timeout time.Duration) (ESLMessage, error) {
-	esl.Logger.Debug("trying to lock write log", "message", msg)
+	esl.logger.Debug("trying to lock write log", "message", msg)
 	esl.writeMutex.Lock()
 	defer esl.writeMutex.Unlock()
-	esl.Logger.Debug("lock aquired", "message", msg)
+	esl.logger.Debug("lock aquired", "message", msg)
 	err := esl.Write(msg + "\n\n")
 	if err != nil {
-		esl.Logger.Error("socket write error", "error", err)
+		esl.logger.Error("socket write error", "error", err)
 		return ESLMessage{}, err
 	}
 	if timeout > 0 {
@@ -127,7 +127,7 @@ func (esl *ESLConnection) SendRecvTimed(msg string, timeout time.Duration) (ESLM
 		case nmsg := <-esl.replyChannel:
 			return nmsg, nil
 		case <-time.After(timeout * time.Second):
-			esl.Logger.Error("socket write error", "error", "timeout")
+			esl.logger.Error("socket write error", "error", "timeout")
 			return ESLMessage{}, fmt.Errorf("esl timeout")
 		}
 	} else {
@@ -201,10 +201,10 @@ func (esl *ESLConnection) InitFilters() error {
 
 func (esl *ESLConnection) ApplyEventBindings() (ESLMessage, error) {
 	cmd := "events plain "
-	if _, exists := esl.Handlers["*"]; exists {
+	if _, exists := esl.handlers["*"]; exists {
 		cmd += "all"
 	} else {
-		for eventName := range esl.Handlers {
+		for eventName := range esl.handlers {
 			cmd += " " + eventName
 		}
 		if esl.enableAsync {
@@ -216,10 +216,10 @@ func (esl *ESLConnection) ApplyEventBindings() (ESLMessage, error) {
 }
 
 func (esl *ESLConnection) AddEventBinding(eventName string, handler func(ESLMessage)) (msg ESLMessage, err error) {
-	if _, exists := esl.Handlers[eventName]; exists {
+	if _, exists := esl.handlers[eventName]; exists {
 		return
 	}
-	esl.Handlers[eventName] = handler
+	esl.handlers[eventName] = handler
 	msg, err = esl.SendCMDf("events plain " + eventName)
 	if err != nil {
 		return
@@ -228,13 +228,13 @@ func (esl *ESLConnection) AddEventBinding(eventName string, handler func(ESLMess
 }
 
 func (esl *ESLConnection) AddGlobalEventHandler(handler func(ESLMessage)) (ESLMessage, error) {
-	esl.Handlers["*"] = handler
+	esl.handlers["*"] = handler
 	return esl.SendCMDf("events plain all")
 }
 
 func (esl *ESLConnection) AddEventBindings(bindings map[string]func(ESLMessage)) (ESLMessage, error) {
 	for eventName, handler := range bindings {
-		esl.Handlers[eventName] = handler
+		esl.handlers[eventName] = handler
 	}
 	return esl.ApplyEventBindings()
 }
@@ -244,7 +244,7 @@ func (esl *ESLConnection) EnableAsyncSupport() {
 }
 
 func (esl *ESLConnection) SetStatus(s string) {
-	esl.Logger.Debug("change status from " + esl.status + " to " + s)
+	esl.logger.Debug("change status from " + esl.status + " to " + s)
 	esl.status = s
 }
 
@@ -259,7 +259,7 @@ func (esl *ESLConnection) notifyJobsForError(err error) {
 func (esl *ESLConnection) ReadMessages() {
 	defer esl.SetStatus("stopped")
 	for {
-		l := esl.Logger.With("func", "ReadMessages")
+		l := esl.logger.With("func", "ReadMessages")
 		l.Debug("waiting for esl msg")
 		msg, err := esl.readMSG() //EOF is returned if socket is closed
 		if err != nil {
@@ -296,9 +296,9 @@ func (esl *ESLConnection) ReadMessages() {
 				}
 				delete(esl.jobs, jobUUID)
 			}
-			if handler, exists := esl.Handlers[eventName]; exists {
+			if handler, exists := esl.handlers[eventName]; exists {
 				go handler(msg)
-			} else if handler, exists := esl.Handlers["*"]; exists {
+			} else if handler, exists := esl.handlers["*"]; exists {
 				go handler(msg)
 			}
 		}
@@ -319,7 +319,7 @@ func (esl *ESLConnection) Wait() error {
 }
 
 func (esl *ESLConnection) MyEvents(handlers map[string]func(ESLMessage)) (msg ESLMessage, err error) {
-	esl.Handlers = handlers
+	esl.handlers = handlers
 	return esl.SendCMD("myevents")
 }
 
@@ -330,9 +330,9 @@ func (esl *ESLConnection) CLose() error {
 	return esl.socket.Close()
 }
 
-func NewEslConnection() ESLConnection {
-	return ESLConnection{
-		Handlers:     map[string]func(ESLMessage){},
+func NewEslConnection() *ESLConnection {
+	return &ESLConnection{
+		handlers:     map[string]func(ESLMessage){},
 		Filters:      map[string]string{},
 		socket:       nil,
 		reader:       &bufio.Reader{},
@@ -342,7 +342,7 @@ func NewEslConnection() ESLConnection {
 		errorChannel: make(chan error, 1),
 		jobs:         map[string]AsyncEslAction{},
 		logMessages:  false,
-		Logger:       slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		logger:       slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		status:       "created",
 		replyTimeout: 0,
 	}

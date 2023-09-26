@@ -11,10 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-func onNewEvent(event esl.ESLMessage) {
-	fmt.Printf("got new event:%s", event.Serialize())
-}
-
 func TestESL(t *testing.T) {
 
 	esl := esl.NewInboundESLConnection(esl.ESLConfig{
@@ -28,10 +24,6 @@ func TestESL(t *testing.T) {
 		t.Fatalf("connection failed, error:%s", err)
 	}
 
-	_, err = esl.AddGlobalEventHandler(onNewEvent)
-	if err != nil {
-		t.Fatalf("adding event handlers failed, error:%s", err)
-	}
 	_, err = esl.Authenticate()
 	if err != nil {
 		t.Fatalf("authentication failed, error:%s", err)
@@ -45,6 +37,7 @@ func TestESL(t *testing.T) {
 		t.Fatalf("api version bad result , body:%s", result.Body)
 	}
 
+	esl.EnableAsync()
 	asyncResult, err := esl.BgAPIWithResult("version", "", "", 3*time.Second)
 	if err != nil {
 		t.Fatalf("bgapi version failed, error:%s", err)
@@ -116,6 +109,11 @@ func TestOutbound(t *testing.T) {
 	err := con.Connect()
 	if err != nil {
 		t.Fatalf("failed connecting esl, error:%s", err)
+	}
+
+	_, err = con.Authenticate()
+	if err != nil {
+		t.Fatalf("authentication failed, error:%s", err)
 	}
 
 	fakeSessionID := uuid.NewString()

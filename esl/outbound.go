@@ -132,7 +132,7 @@ func (server *ESLServer) Run() error {
 }
 
 type EslOutboundConnection struct {
-	ESLConnection
+	*ESLConnection
 	channelData ESLMessage
 }
 
