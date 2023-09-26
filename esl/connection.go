@@ -40,6 +40,10 @@ type ESLConnection struct {
 	replyTimeout      time.Duration
 }
 
+func (esl *ESLConnection) SetLogger(logger *slog.Logger) {
+	esl.logger = logger
+}
+
 func (esl *ESLConnection) EnableAsync() (ESLMessage, error) {
 	esl.enableAsync = true
 	cmd := fmt.Sprintf("events plain %s %s ", EventBackgroundJob, EventChannelExecuteComplete)
